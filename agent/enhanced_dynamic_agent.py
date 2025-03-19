@@ -47,11 +47,20 @@ class EnhancedDynamicAgent:
     def generate_prompt(self, user_query):
         """
         Generate a prompt for the language model with dynamic join hints
+        and detailed schema validation instructions
         """
+        # Build a compact representation of available tables and columns
+        table_column_info = ""
+        for table_name, table_info in self.schema.items():
+            columns = [col['name'] for col in table_info['columns']]
+            table_column_info += f"\n- Table '{table_name}' has columns: {', '.join(columns)}"
+        
         return f"""You are a helpful SQL assistant. Your job is to convert a natural language question into a valid SQL query.
 
 Database information:
 {self.tables_description}
+
+Available tables and columns:{table_column_info}
 
 Foreign key relationships:
 {self.join_hints}
@@ -60,15 +69,17 @@ User's question: {user_query}
 
 IMPORTANT INSTRUCTIONS:
 1. Think step by step about what SQL query would best answer this question.
-2. When the query involves multiple tables, use JOIN clauses based on the foreign key relationships provided.
-3. Always use table aliases when joining tables (e.g., 'projects AS p').
-4. Always qualify column names with their table aliases (e.g., 'p.id', not just 'id').
-5. If the request is for data from a table that has foreign keys, automatically join with the related tables to provide more context in the results.
-6. Use LEFT JOIN instead of INNER JOIN by default to ensure all primary table records are included.
-7. When joining multiple tables, create meaningful aliases like 'p' for 'projects', 'c' for 'categories', etc.
-8. Include a semicolon at the end of your query.
-9. ONLY provide the SQL query itself without any markdown formatting, explanations, or additional text.
-10. Do NOT use triple backticks or markdown formatting.
+2. ONLY use tables and columns that actually exist in the database schema provided above.
+3. Double-check all table and column names to ensure they match exactly what's in the schema.
+4. When the query involves multiple tables, use JOIN clauses based on the foreign key relationships provided.
+5. Always use table aliases when joining tables (e.g., 'projects AS p').
+6. Always qualify column names with their table aliases (e.g., 'p.id', not just 'id').
+7. If the request is for data from a table that has foreign keys, automatically join with the related tables.
+8. Use LEFT JOIN instead of INNER JOIN by default to ensure all primary table records are included.
+9. When joining multiple tables, create meaningful aliases like 'p' for 'projects', 'c' for 'categories', etc.
+10. Include a semicolon at the end of your query.
+11. ONLY provide the SQL query itself without any markdown formatting, explanations, or additional text.
+12. Do NOT use triple backticks or markdown formatting.
 
 Now, provide ONLY the SQL query for the user's question above."""
     
@@ -278,8 +289,34 @@ Now, provide ONLY the SQL query for the user's question above."""
             # 5. Enhance the query with JOINs if needed and applicable
             enhanced_query = self.enhance_query_with_joins(sql_query)
             
-            # 6. Execute the enhanced query
-            result = self.sql_engine(enhanced_query)
+            # 6. If the query still fails, try with a simplified version
+            try:
+                result = self.sql_engine(enhanced_query)
+            except Exception as e:
+                # Extract the main table from the query, if possible
+                main_table = self._extract_main_table(enhanced_query)
+                
+                if main_table and main_table in self.schema:
+                    # Get columns for this table
+                    columns = [c['name'] for c in self.schema[main_table]['columns']]
+                    simple_query = f"SELECT {main_table}.* FROM {main_table};"
+                    
+                    # Log the fallback
+                    fallback_note = f"The original query failed: {str(e)}. Using a simplified query."
+                    
+                    result = self.sql_engine(simple_query)
+                    
+                    # Format and return the response with fallback info
+                    return {
+                        "user_query": query,
+                        "sql_query": simple_query,
+                        "original_query": enhanced_query,
+                        "result": result,
+                        "note": fallback_note
+                    }
+                else:
+                    # If we can't extract a main table, raise the original error
+                    raise
             
             # 7. Format and return the response
             response_data = {

@@ -72,15 +72,24 @@ async def ask_question(request: QueryRequest):
 async def execute_direct_sql(request: DirectSQLRequest):
     """
     Execute SQL queries directly on the specified database
+    with schema validation and error recovery
     """
     try:
         # Get connection to the database
         engine = db_manager.get_connection(request.db_config.dict())
         
-        # Execute the query
+        # Get schema information - useful for debugging in response
+        schema_info = db_manager.get_tables_schema(engine)
+        available_tables = list(schema_info.keys())
+        table_columns = {}
+        for table_name, table_info in schema_info.items():
+            table_columns[table_name] = [col['name'] for col in table_info['columns']]
+        
+        # Execute the query with the enhanced error handling
         result = db_manager.execute_query(engine, request.sql_query)
         
-        return {
+        # Prepare response
+        response_data = {
             "db_config": {
                 "databasetype": request.db_config.databasetype,
                 "envirment": request.db_config.envirment,
@@ -91,8 +100,59 @@ async def execute_direct_sql(request: DirectSQLRequest):
                 "ssl": request.db_config.ssl
             },
             "sql_query": request.sql_query,
-            "result": result
+            "result": result,
+            "data": []
         }
+        
+        # Add schema information to help with debugging
+        # Only add this if there was an error in the result
+        if "Error executing query:" in result:
+            response_data["available_tables"] = available_tables
+            response_data["table_columns"] = table_columns
+            
+            # Extract referenced tables from the query to help debugging
+            import re
+            tables_in_query = []
+            # Try to extract table names from the FROM clause
+            from_matches = re.findall(r'\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', request.sql_query, re.IGNORECASE)
+            if from_matches:
+                for match in from_matches:
+                    tables_in_query.append(match[0])
+            # Try to extract table names from JOIN clauses
+            join_matches = re.findall(r'\bJOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', request.sql_query, re.IGNORECASE)
+            if join_matches:
+                for match in join_matches:
+                    tables_in_query.append(match[0])
+            
+            # Add referenced tables to the response
+            response_data["tables_in_query"] = tables_in_query
+            
+            # Compare with available tables to identify missing tables
+            missing_tables = []
+            for table in tables_in_query:
+                if table not in available_tables:
+                    missing_tables.append(table)
+            if missing_tables:
+                response_data["missing_tables"] = missing_tables
+                
+                # Suggest closest matches for missing tables
+                suggestions = {}
+                for missing in missing_tables:
+                    closest = None
+                    min_distance = float('inf')
+                    for available in available_tables:
+                        # Simple Levenshtein distance calculation
+                        distance = sum(1 for a, b in zip(missing.lower(), available.lower()) if a != b) + abs(len(missing) - len(available))
+                        if distance < min_distance:
+                            min_distance = distance
+                            closest = available
+                    if closest and min_distance <= 3:  # Only suggest if reasonably close
+                        suggestions[missing] = closest
+                if suggestions:
+                    response_data["table_suggestions"] = suggestions
+        
+        return response_data
+        
     except ConnectionError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

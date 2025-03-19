@@ -1,11 +1,13 @@
 from sqlalchemy import create_engine, inspect, text, MetaData, Table
 from urllib.parse import quote_plus
 import json
+from database.schema_validator import SchemaValidator
 
 class EnhancedDatabaseManager:
     def __init__(self):
         self.connections = {}
         self.foreign_keys_cache = {}
+        self.schema_validators = {}
     
     def get_connection_string(self, db_config):
         """
@@ -304,34 +306,26 @@ class EnhancedDatabaseManager:
         return False
     
     def execute_query(self, engine, query):
-        """Execute a SQL query and return the results as a string"""
-        output = ""
-        try:
-            # Clean up the query (remove any lingering markdown or formatting)
-            cleaned_query = query.replace("```sql", "").replace("```", "").strip()
-            
-            # Execute the query
-            with engine.connect() as con:
-                rows = con.execute(text(cleaned_query))
-                
-                # Process results
-                rows_data = rows.fetchall()
-                if not rows_data:
-                    return "Query executed successfully. No rows returned."
-                
-                # Get column names for better output
-                column_names = rows.keys()
-                
-                # Format results as a table
-                header = " | ".join(column_names)
-                separator = "-" * len(header)
-                output = f"{header}\n{separator}"
-                
-                # Add data rows
-                for row in rows_data:
-                    row_values = [str(value) for value in row]
-                    output += f"\n{' | '.join(row_values)}"
-                
-            return output
-        except Exception as e:
-            return f"Error executing query: {str(e)}"
+        """
+        Execute a SQL query and return the results as a string.
+        Uses SchemaValidator to validate and adapt the query to the actual database schema.
+        """
+        # Get or create schema validator for this engine
+        engine_id = str(id(engine))
+        if engine_id not in self.schema_validators:
+            self.schema_validators[engine_id] = SchemaValidator(engine)
+        
+        schema_validator = self.schema_validators[engine_id]
+        
+        # Validate, adapt, and execute the query
+        result_dict, warnings = schema_validator.execute_query_safely(query)
+        
+        # Include warnings in the output if there are any
+        output = result_dict["result"]
+        if warnings:
+            warning_output = "\n\nWarnings/Suggestions:"
+            for warning in warnings:
+                warning_output += f"\n- {warning}"
+            output += warning_output
+        
+        return output
