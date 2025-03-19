@@ -1,195 +1,196 @@
-# Complete Guide to SQL Agent with Ollama
+# SQL Agent Project
 
-This guide will walk you through setting up and running the SQL Agent project that uses Ollama for text-to-SQL conversion.
+A sophisticated text-to-SQL conversion system that leverages local language models (Ollama) to transform natural language queries into executable SQL with advanced database schema understanding and auto-join detection.
 
-## Prerequisites
+## Project Overview
+
+The SQL Agent project is an advanced system for connecting to various database types (MySQL, PostgreSQL), extracting schema information, and translating natural language questions into optimized SQL queries. It features:
+
+- **Multi-database support**: Connects seamlessly to MySQL and PostgreSQL databases
+- **Automatic foreign key detection**: Identifies relationships between tables automatically
+- **Smart JOIN suggestions**: Analyzes database schema to suggest optimal table joins
+- **Natural language to SQL conversion**: Uses Ollama's local LLM capabilities
+- **Advanced error handling**: Provides detailed error analysis and suggestions
+- **Schema validation**: Validates queries against the database schema before execution
+
+## Development Setup
+
+### Prerequisites
 
 - Python 3.8 or higher
 - pip (Python package installer)
+- MySQL or PostgreSQL database for testing (optional)
 - Ollama (for local LLM execution)
 
-## Step 1: Project Setup
+### Installation Steps
 
-1. Create the project directory structure:
+1. **Clone the repository**
+
+   ```bash
+   git clone <repository-url>
+   cd sql_agent_project
+   ```
+
+2. **Install required packages**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+   The project depends on:
+   - fastapi==0.103.1
+   - uvicorn==0.23.2
+   - sqlalchemy==2.0.20
+   - pydantic==2.3.0
+   - requests==2.31.0
+   - pymysql==1.1.0
+
+3. **Install Ollama**
+
+   #### macOS
+   ```bash
+   brew install ollama
+   ```
+   Or download from: https://ollama.com/download/mac
+
+   #### Linux
+   ```bash
+   curl -fsSL https://ollama.com/install.sh | sh
+   ```
+
+   #### Windows
+   Download from: https://ollama.com/download/windows
+
+4. **Start Ollama service**
+
+   ```bash
+   ollama serve
+   ```
+
+5. **Pull the Llama model**
+
+   ```bash
+   ollama pull llama3
+   ```
+
+6. **Start the application**
+
+   ```bash
+   uvicorn app:app --reload
+   ```
+
+   The API will be available at http://127.0.0.1:8000
+
+## Project Architecture
+
+```
+sql_agent_project/
+├── agent/                      # Contains LLM agent implementations
+│   ├── __init__.py
+│   └── enhanced_dynamic_agent.py # Main agent for text-to-SQL with auto-join
+├── database/                   # Database interaction modules
+│   ├── __init__.py
+│   ├── enhanced_db_manager.py  # Advanced database connections and schema extraction
+│   └── schema_validator.py     # SQL validation against schema
+├── tests/                      # Test modules
+│   ├── test_schema_validator.py
+│   ├── test_project_fk_resolver.py
+│   └── test_foreign_key_display.py
+├── utils/                      # Utility functions
+│   └── inspect_schema.py       # Schema inspection utilities
+├── app.py                      # FastAPI application entry point
+├── requirements.txt            # Project dependencies
+└── README.md                   # Project documentation
+```
+
+## Core Components
+
+### EnhancedDatabaseManager
+
+The `EnhancedDatabaseManager` class located in `database/enhanced_db_manager.py` handles:
+
+- Dynamic connections to multiple database types
+- Schema extraction and caching
+- Foreign key detection and relationship mapping
+- SQL query execution with enhanced error handling
+- Smart JOIN suggestions based on schema analysis
+
+### EnhancedDynamicAgent
+
+The `EnhancedDynamicAgent` class in `agent/enhanced_dynamic_agent.py` provides:
+
+- Integration with Ollama's local LLM capabilities
+- Context-aware prompting with schema information
+- Natural language to SQL conversion
+- Error analysis and suggestions
+- Query optimization through automatic join detection
+
+## API Endpoints
+
+The application provides several REST API endpoints:
+
+- **POST /api/ask**  
+  Convert natural language to SQL and execute it on the specified database with automatic foreign key detection and JOIN enhancement.
+
+- **POST /api/direct-sql**  
+  Execute SQL queries directly on the specified database with schema validation and error recovery.
+
+- **POST /api/schema**  
+  Get the schema of the specified database including foreign key relationships.
+
+- **POST /api/suggest-join**  
+  Suggest a JOIN query for the specified table based on foreign key relationships.
+
+- **GET /api/models**  
+  List available Ollama models.
+
+## Database Normalization Features
+
+This project includes a comprehensive database normalization service with the following capabilities:
+
+1. Support for multiple database types (PostgreSQL, MySQL)
+2. Automatic foreign key resolution and relationship mapping
+3. Semantic understanding of database schema
+4. Natural language querying of normalized data
+
+Key components of the normalization service:
+- Dynamic schema extraction
+- Foreign key reference resolution and expansion
+- Smart JOIN detection based on schema analysis
+- Error detection and recovery mechanisms
+
+## Running Tests
+
+To run the test suite:
 
 ```bash
-mkdir -p sql_agent_project/database
-mkdir -p sql_agent_project/agent
-touch sql_agent_project/database/__init__.py
-touch sql_agent_project/agent/__init__.py
+python -m pytest tests/
 ```
 
-2. Navigate to the project directory:
+## Development Workflow
 
-```bash
-cd sql_agent_project
-```
+1. Start the development server with auto-reload:
+   ```bash
+   uvicorn app:app --reload
+   ```
 
-## Step 2: Install Required Packages
+2. Make API requests to the endpoints using a tool like curl, Postman, or the built-in Swagger UI at http://127.0.0.1:8000/docs
 
-1. Create a `requirements.txt` file with the following content:
+3. For database testing, you can use the included test fixtures or connect to your own database
 
-```
-fastapi==0.103.1
-uvicorn==0.23.2
-sqlalchemy==2.0.20
-pydantic==2.3.0
-requests==2.31.0
-```
+## Troubleshooting
 
-2. Install the required packages:
+- **Connection Issues**: Ensure database credentials are correct and the database server is accessible
+- **Ollama Errors**: Verify that Ollama is running with `ollama serve` and that the model has been downloaded
+- **SQL Errors**: Check the schema validator output for detailed information about SQL syntax issues
 
-```bash
-pip install -r requirements.txt
+## Future Enhancements
 
-# or 
-
-pip install fastapi uvicorn sqlalchemy pydantic requests
-```
-
-## Step 3: Install and Set Up Ollama
-
-1. Install Ollama based on your operating system:
-
-### macOS
-
-```bash
-brew install ollama
-```
-
-Or download from: https://ollama.com/download/mac
-
-### Linux
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-```
-
-### Windows
-
-Download from: https://ollama.com/download/windows
-
-2. Start the Ollama service:
-
-```bash
-ollama serve
-```
-
-3. Pull the Llama model:
-
-```bash
-ollama pull llama3
-```
-
-## Step 4: Create the Database Setup Module
-
-Create a file `database/db_setup.py` with the following content:
-
-```python
-from sqlalchemy import (
-    create_engine,
-    MetaData,
-    Table,
-    Column,
-    String,
-    Integer,
-    Float,
-    insert,
-    inspect,
-    text,
-)
-
-def create_database():
-    """Create and populate the database with sample data"""
-    engine = create_engine("sqlite:///:memory:")
-    metadata_obj = MetaData()
-
-    # Create receipts table
-    receipts = Table(
-        "receipts",
-        metadata_obj,
-        Column("receipt_id", Integer, primary_key=True),
-        Column("customer_name", String(16), primary_key=True),
-        Column("price", Float),
-        Column("tip", Float),
-    )
-
-    # Create waiters table
-    waiters = Table(
-        "waiters",
-        metadata_obj,
-        Column("receipt_id", Integer, primary_key=True),
-        Column("waiter_name", String(16), primary_key=True),
-    )
-
-    # Create all tables in the database
-    metadata_obj.create_all(engine)
-
-    # Insert sample data into receipts table
-    receipt_rows = [
-        {"receipt_id": 1, "customer_name": "Alan Payne", "price": 12.06, "tip": 1.20},
-        {"receipt_id": 2, "customer_name": "Alex Mason", "price": 23.86, "tip": 0.24},
-        {"receipt_id": 3, "customer_name": "Woodrow Wilson", "price": 53.43, "tip": 5.43},
-        {"receipt_id": 4, "customer_name": "Margaret James", "price": 21.11, "tip": 1.00},
-    ]
-    
-    for row in receipt_rows:
-        stmt = insert(receipts).values(**row)
-        with engine.begin() as connection:
-            connection.execute(stmt)
-
-    # Insert sample data into waiters table
-    waiter_rows = [
-        {"receipt_id": 1, "waiter_name": "Corey Johnson"},
-        {"receipt_id": 2, "waiter_name": "Michael Watts"},
-        {"receipt_id": 3, "waiter_name": "Michael Watts"},
-        {"receipt_id": 4, "waiter_name": "Margaret James"},
-    ]
-    
-    for row in waiter_rows:
-        stmt = insert(waiters).values(**row)
-        with engine.begin() as connection:
-            connection.execute(stmt)
-    
-    return engine
-
-def get_tables_description(engine):
-    """Generate a description of all tables in the database"""
-    description = "Allows you to perform SQL queries on the tables. Returns a string representation of the result.\nIt can use the following tables:"
-
-    inspector = inspect(engine)
-    for table in ["receipts", "waiters"]:
-        columns_info = [(col["name"], col["type"]) for col in inspector.get_columns(table)]
-        
-        table_description = f"\n\nTable '{table}':\nColumns:"
-        for name, col_type in columns_info:
-            table_description += f"\n  - {name}: {col_type}"
-        
-        description += table_description
-    
-    return description
-
-def execute_query(engine, query):
-    """Execute a SQL query and return the results as a string"""
-    output = ""
-    try:
-        with engine.connect() as con:
-            rows = con.execute(text(query))
-            for row in rows:
-                output += "\n" + str(row)
-        return output.strip() if output else "Query executed successfully. No rows returned."
-    except Exception as e:
-        return f"Error executing query: {str(e)}"
-```
-
-## Step 5: Create the Ollama Agent Module
-
-Create a file `agent/ollama_agent.py` with the following content:
-
-```python
-import json
-import requests
-from sqlalchemy import text
+- Add support for additional database types (MS SQL Server, Oracle)
+- Implement vector embeddings for semantic search
+- Add incremental normalization capabilities
+- Create migration scripts for existing databases
+- Improve error handling and logging
 
 class OllamaAgent:
     def __init__(self, engine, tables_description, model_name="llama3"):
