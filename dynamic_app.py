@@ -39,10 +39,12 @@ class QueryRequest(BaseModel):
     db_config: DatabaseConfig
     query: str
     model_name: Optional[str] = "llama3"
+    auto_join: Optional[bool] = True
 
 class DirectSQLRequest(BaseModel):
     db_config: DatabaseConfig
     sql_query: str
+    auto_join: Optional[bool] = True
 
 @app.post("/api/ask")
 async def ask_question(request: QueryRequest):
@@ -57,8 +59,8 @@ async def ask_question(request: QueryRequest):
             model_name=request.model_name
         )
         
-        # Run the query
-        response = agent.run(request.query)
+        # Run the query with auto_join parameter
+        response = agent.run(request.query, auto_join=request.auto_join)
         
         return response
     except ConnectionError as e:
@@ -75,8 +77,8 @@ async def execute_direct_sql(request: DirectSQLRequest):
         # Get connection to the database
         engine = db_manager.get_connection(request.db_config.dict())
         
-        # Execute the query
-        result = db_manager.execute_query(engine, request.sql_query)
+        # Execute the query with auto_join if specified
+        result = db_manager.execute_query(engine, request.sql_query, auto_join=request.auto_join)
         
         return {
             "db_config": {

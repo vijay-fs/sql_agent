@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, inspect, text, MetaData, Table
 from urllib.parse import quote_plus
 import json
+from database.schema_validator import SchemaValidator
 
 class DatabaseManager:
     def __init__(self):
@@ -129,7 +130,7 @@ class DatabaseManager:
         
         return description
     
-    def execute_query(self, engine, query, return_raw_data=False):
+    def execute_query(self, engine, query, return_raw_data=False, auto_join=True):
         """
         Execute a SQL query and return the results as a string and/or raw data
         
@@ -137,18 +138,50 @@ class DatabaseManager:
             engine: SQLAlchemy engine
             query: SQL query to execute
             return_raw_data: Whether to include raw data in the response
+            auto_join: Whether to automatically join related tables via foreign keys
             
         Returns:
             dict: Contains 'result' string and optionally 'data' list of dicts
         """
         output = ""
         data = []
+        warnings = []
         
         try:
             # Clean up the query (remove any lingering markdown or formatting)
             cleaned_query = query.replace("```sql", "").replace("```", "").strip()
             
-            # Execute the query
+            # If auto_join is enabled, use SchemaValidator to enhance the query with foreign key resolution
+            if auto_join:
+                # Create a schema validator for this connection
+                validator = SchemaValidator(engine)
+                
+                # Execute the query safely with foreign key resolution
+                result_dict, query_warnings = validator.execute_query_safely(cleaned_query)
+                
+                # Process the results
+                if result_dict:
+                    # Add any warnings from the validator
+                    warnings.extend(query_warnings)
+                    
+                    # Extract the output string and data
+                    output = result_dict.get("result", "")
+                    data = result_dict.get("data", [])
+                    
+                    # Return the enhanced results
+                    if return_raw_data:
+                        return {
+                            "result": output,
+                            "data": data,
+                            "warnings": warnings if warnings else None
+                        }
+                    else:
+                        return {
+                            "result": output,
+                            "warnings": warnings if warnings else None
+                        }
+            
+            # Standard execution without SchemaValidator
             with engine.connect() as con:
                 rows = con.execute(text(cleaned_query))
                 
@@ -196,7 +229,30 @@ class DatabaseManager:
                 }
                 
         except Exception as e:
-            error_msg = f"Error executing query: {str(e)}"
+            error_msg = f"Error executing query: {str(e)}\n[SQL: {cleaned_query}]\n(Background on this error at: https://sqlalche.me/e/20/e3q8)"
+            warnings.append(error_msg)
+            
+            # If we have an error and auto_join is enabled, try to get fallback results
+            if auto_join:
+                try:
+                    validator = SchemaValidator(engine)
+                    result_dict, query_warnings = validator.execute_query_safely(cleaned_query)
+                    
+                    if result_dict:
+                        # Add any additional warnings
+                        warnings.extend(query_warnings)
+                        
+                        # Return the fallback results
+                        return {
+                            "result": result_dict.get("result", "Fallback query executed instead of the original query."),
+                            "data": result_dict.get("data", []),
+                            "warnings": warnings
+                        }
+                except Exception as inner_e:
+                    # If the fallback also fails, add that to warnings
+                    warnings.append(f"Fallback query also failed: {str(inner_e)}")
+            
+            # If we reach here, both the original query and fallback failed or no fallback was attempted
             if return_raw_data:
                 return {
                     "result": error_msg,
