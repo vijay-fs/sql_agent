@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, text, MetaData, Table
 from urllib.parse import quote_plus
 import json
 
@@ -30,6 +30,23 @@ class DatabaseManager:
             if use_ssl:
                 conn_str += "?ssl=true"
                 
+            return conn_str
+        elif db_type == "postgresql":
+            username = db_config.get("username", "")
+            password = db_config.get("password", "")
+            host = db_config.get("envirment", "localhost")
+            port = db_config.get("port", "5432")
+            database = db_config.get("database", "")
+            
+            # URL encode the password to handle special characters
+            encoded_password = quote_plus(password)
+            
+            # Construct connection string
+            conn_str = f"postgresql://{username}:{encoded_password}@{host}:{port}/{database}"
+            return conn_str
+        elif db_type == "sqlite":
+            database = db_config.get("database", ":memory:")
+            conn_str = f"sqlite:///{database}"
             return conn_str
         else:
             raise ValueError(f"Unsupported database type: {db_type}")
@@ -82,10 +99,14 @@ class DatabaseManager:
             # Get primary key information
             pk_columns = inspector.get_pk_constraint(table).get("constrained_columns", [])
             
+            # Get foreign key information
+            fks = inspector.get_foreign_keys(table)
+            
             # Store table schema
             schema_info[table] = {
                 "columns": columns,
-                "primary_keys": pk_columns
+                "primary_keys": pk_columns,
+                "foreign_keys": fks
             }
         
         return schema_info
@@ -108,9 +129,21 @@ class DatabaseManager:
         
         return description
     
-    def execute_query(self, engine, query):
-        """Execute a SQL query and return the results as a string"""
+    def execute_query(self, engine, query, return_raw_data=False):
+        """
+        Execute a SQL query and return the results as a string and/or raw data
+        
+        Args:
+            engine: SQLAlchemy engine
+            query: SQL query to execute
+            return_raw_data: Whether to include raw data in the response
+            
+        Returns:
+            dict: Contains 'result' string and optionally 'data' list of dicts
+        """
         output = ""
+        data = []
+        
         try:
             # Clean up the query (remove any lingering markdown or formatting)
             cleaned_query = query.replace("```sql", "").replace("```", "").strip()
@@ -122,7 +155,15 @@ class DatabaseManager:
                 # Process results
                 rows_data = rows.fetchall()
                 if not rows_data:
-                    return "Query executed successfully. No rows returned."
+                    if return_raw_data:
+                        return {
+                            "result": "Query executed successfully. No rows returned.",
+                            "data": []
+                        }
+                    else:
+                        return {
+                            "result": "Query executed successfully. No rows returned."
+                        }
                 
                 # Get column names for better output
                 column_names = rows.keys()
@@ -136,7 +177,32 @@ class DatabaseManager:
                 for row in rows_data:
                     row_values = [str(value) for value in row]
                     output += f"\n{' | '.join(row_values)}"
+                    
+                    # Add to raw data if requested
+                    if return_raw_data:
+                        data_row = {}
+                        for i, col in enumerate(column_names):
+                            data_row[col] = row[i]
+                        data.append(data_row)
+            
+            if return_raw_data:
+                return {
+                    "result": output,
+                    "data": data
+                }
+            else:
+                return {
+                    "result": output
+                }
                 
-            return output
         except Exception as e:
-            return f"Error executing query: {str(e)}"
+            error_msg = f"Error executing query: {str(e)}"
+            if return_raw_data:
+                return {
+                    "result": error_msg,
+                    "data": []
+                }
+            else:
+                return {
+                    "result": error_msg
+                }
