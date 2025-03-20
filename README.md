@@ -87,17 +87,11 @@ The SQL Agent project is an advanced system for connecting to various database t
 sql_agent_project/
 ├── agent/                      # Contains LLM agent implementations
 │   ├── __init__.py
-│   └── enhanced_dynamic_agent.py # Main agent for text-to-SQL with auto-join
+│   └── dynamic_agent.py # Main agent for text-to-SQL with auto-join
 ├── database/                   # Database interaction modules
 │   ├── __init__.py
-│   ├── enhanced_db_manager.py  # Advanced database connections and schema extraction
+│   ├── db_manager.py  # Advanced database connections and schema extraction
 │   └── schema_validator.py     # SQL validation against schema
-├── tests/                      # Test modules
-│   ├── test_schema_validator.py
-│   ├── test_project_fk_resolver.py
-│   └── test_foreign_key_display.py
-├── utils/                      # Utility functions
-│   └── inspect_schema.py       # Schema inspection utilities
 ├── app.py                      # FastAPI application entry point
 ├── requirements.txt            # Project dependencies
 └── README.md                   # Project documentation
@@ -107,7 +101,7 @@ sql_agent_project/
 
 ### EnhancedDatabaseManager
 
-The `EnhancedDatabaseManager` class located in `database/enhanced_db_manager.py` handles:
+The `DatabaseManager` class located in `database/db_manager.py` handles:
 
 - Dynamic connections to multiple database types
 - Schema extraction and caching
@@ -115,9 +109,9 @@ The `EnhancedDatabaseManager` class located in `database/enhanced_db_manager.py`
 - SQL query execution with enhanced error handling
 - Smart JOIN suggestions based on schema analysis
 
-### EnhancedDynamicAgent
+### DynamicAgent
 
-The `EnhancedDynamicAgent` class in `agent/enhanced_dynamic_agent.py` provides:
+The `DynamicAgent` class in `agent/dynamic_agent.py` provides:
 
 - Integration with Ollama's local LLM capabilities
 - Context-aware prompting with schema information
@@ -158,14 +152,6 @@ Key components of the normalization service:
 - Foreign key reference resolution and expansion
 - Smart JOIN detection based on schema analysis
 - Error detection and recovery mechanisms
-
-## Running Tests
-
-To run the test suite:
-
-```bash
-python -m pytest tests/
-```
 
 ## Development Workflow
 

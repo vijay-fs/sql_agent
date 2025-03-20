@@ -4,7 +4,7 @@ import re
 from sqlalchemy import text, exc
 from typing import Dict, List, Any
 
-class EnhancedDynamicAgent:
+class DynamicAgent:
     def __init__(self, db_manager, db_config, model_name="llama3"):
         """
         Initialize an agent that uses Ollama for language model inference

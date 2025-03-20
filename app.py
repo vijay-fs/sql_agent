@@ -4,8 +4,8 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import uvicorn
 
-from database.enhanced_db_manager import EnhancedDatabaseManager
-from agent.enhanced_dynamic_agent import EnhancedDynamicAgent
+from database.db_manager import DatabaseManager
+from agent.dynamic_agent import DynamicAgent
 
 # Create FastAPI app
 app = FastAPI(
@@ -24,7 +24,7 @@ app.add_middleware(
 )
 
 # Create enhanced database manager
-db_manager = EnhancedDatabaseManager()
+db_manager = DatabaseManager()
 
 class DatabaseConfig(BaseModel):
     databasetype: str = "mysql"
@@ -53,7 +53,7 @@ async def ask_question(request: QueryRequest):
     """
     try:
         # Create agent for this database connection
-        agent = EnhancedDynamicAgent(
+        agent = DynamicAgent(
             db_manager=db_manager,
             db_config=request.db_config.dict(),
             model_name=request.model_name

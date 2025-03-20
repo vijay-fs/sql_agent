@@ -3,7 +3,7 @@ from urllib.parse import quote_plus
 import json
 from database.schema_validator import SchemaValidator
 
-class EnhancedDatabaseManager:
+class DatabaseManager:
     def __init__(self):
         self.connections = {}
         self.foreign_keys_cache = {}
