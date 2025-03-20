@@ -386,6 +386,12 @@ class EnhancedDatabaseManager:
                     warning_output += f"\n- {warning}"
                 result_dict["result"] += warning_output
             
+            # If normalized data is not available but data is present, resolve foreign keys
+            if "data" in result_dict and result_dict["data"] and "normalized_data" not in result_dict:
+                result_dict["normalized_data"] = schema_validator.resolve_foreign_keys(
+                    result_dict["data"], table_name
+                )
+            
             return {
                 "sql_query": query,
                 "result": result_dict["result"],
@@ -398,11 +404,18 @@ class EnhancedDatabaseManager:
             simple_query = f"SELECT * FROM {table_name} LIMIT {limit};"
             result_dict, warnings = schema_validator.execute_query_safely(simple_query)
             
+            # Include warnings in the output
             if warnings:
                 warning_output = "\n\nWarnings/Suggestions:"
                 for warning in warnings:
                     warning_output += f"\n- {warning}"
                 result_dict["result"] += warning_output
+            
+            # If normalized data is not available but data is present, resolve foreign keys
+            if "data" in result_dict and result_dict["data"] and "normalized_data" not in result_dict:
+                result_dict["normalized_data"] = schema_validator.resolve_foreign_keys(
+                    result_dict["data"], table_name
+                )
             
             return {
                 "sql_query": simple_query,

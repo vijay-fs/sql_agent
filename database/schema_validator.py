@@ -297,8 +297,8 @@ class SchemaValidator:
                     if column_name.lower() not in ['distinct', 'as', 'count', 'sum', 'avg', 'min', 'max']:
                         # Try to find this column in any of the tables
                         found = False
-                        for table, alias in table_alias_map.items():
-                            if alias in self.tables_info and self.get_actual_column_name(alias, column_name):
+                        for alias, table in table_alias_map.items():
+                            if table in self.tables_info and self.get_actual_column_name(table, column_name):
                                 found = True
                                 break
                         
@@ -451,6 +451,9 @@ class SchemaValidator:
         # Get foreign key relationships for this table
         fk_relationships = self.foreign_key_map.get(main_table, {})
         
+        # Get foreign keys that reference this table
+        reverse_references = self._get_reverse_references(main_table)
+        
         # For each data row, resolve the foreign keys
         for row in data_rows:
             enriched_row = row.copy()
@@ -488,9 +491,67 @@ class SchemaValidator:
                         # Format the original FK field for display
                         enriched_row[fk_column] = f"{fk_value} ({display_value})"
             
+            # Add reverse references (other tables that reference this row)
+            if reverse_references:
+                related_collections = {}
+                
+                # For each table that references this one
+                for ref_table, ref_info in reverse_references.items():
+                    local_column = ref_info['referred_column']  # Column in this table
+                    foreign_column = ref_info['local_column']   # Column in the referencing table
+                    
+                    if local_column in row and row[local_column] is not None:
+                        # Fetch rows that reference this one
+                        related_rows = self.fetch_related_rows(ref_table, foreign_column, row[local_column])
+                        
+                        if related_rows:
+                            # Process into a simpler format
+                            simple_related = []
+                            for related_row in related_rows:
+                                display_field = self.get_display_field(ref_table, related_row)
+                                display_value = related_row.get(display_field, f"ID: {related_row.get('id', 'Unknown')}")
+                                simple_related.append({
+                                    "id": related_row.get('id'),
+                                    "display": display_value,
+                                    "data": related_row
+                                })
+                            
+                            # Add to the collections
+                            if simple_related:
+                                related_collections[ref_table] = simple_related
+                
+                # Only add if we found any related items
+                if related_collections:
+                    enriched_row['related_collections'] = related_collections
+            
             enriched_rows.append(enriched_row)
         
         return enriched_rows
+    
+    def _get_reverse_references(self, table_name: str) -> Dict[str, Dict[str, str]]:
+        """
+        Get tables that have foreign keys referencing this table
+        
+        Args:
+            table_name: The table to find references to
+            
+        Returns:
+            Dictionary mapping referencing table names to their foreign key info
+        """
+        reverse_refs = {}
+        
+        for other_table, fk_info in self.foreign_key_map.items():
+            if other_table == table_name:
+                continue
+                
+            for col, ref in fk_info.items():
+                if ref['referred_table'] == table_name:
+                    reverse_refs[other_table] = {
+                        'local_column': col,                   # Column in the referencing table
+                        'referred_column': ref['referred_column']  # Column in this table
+                    }
+        
+        return reverse_refs
     
     def fetch_referenced_row(self, table: str, column: str, value: Any) -> Optional[Dict]:
         """
@@ -527,6 +588,44 @@ class SchemaValidator:
         except Exception:
             # If there's any error fetching the reference, just return None
             return None
+    
+    def fetch_related_rows(self, table: str, column: str, value: Any, limit: int = 5) -> List[Dict]:
+        """
+        Fetch rows from a table that reference a specific value
+        
+        Args:
+            table: The table to fetch from
+            column: The column to match on (foreign key)
+            value: The value to match
+            limit: Maximum number of rows to return
+            
+        Returns:
+            List of dictionaries with row data
+        """
+        try:
+            # Properly escape values based on data type
+            if isinstance(value, (int, float)):
+                value_str = str(value)
+            else:
+                value_str = f"'{value}'"
+            
+            query = f"SELECT * FROM {table} WHERE {column} = {value_str} LIMIT {limit}"
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query))
+                rows = result.fetchall()
+                
+                row_dicts = []
+                for row in rows:
+                    row_dict = {}
+                    for i, col in enumerate(result.keys()):
+                        row_dict[col] = row[i]
+                    row_dicts.append(row_dict)
+                
+                return row_dicts
+        except Exception:
+            # If there's any error fetching the references, just return empty list
+            return []
     
     def get_display_field(self, table: str, row: Dict) -> str:
         """
@@ -841,7 +940,11 @@ class SchemaValidator:
             table_parts = re.split(r'\s+', after_from, 1)
             table_name = table_parts[0].strip()
             # Remove any trailing comma or semicolon
-            return table_name.rstrip(',;')
+            table_name = table_name.rstrip(',;')
+            
+            # Get the actual table name
+            actual_table = self.get_actual_table_name(table_name)
+            return actual_table if actual_table else table_name
         
         return None
     

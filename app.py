@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
@@ -9,8 +9,8 @@ from agent.enhanced_dynamic_agent import EnhancedDynamicAgent
 
 # Create FastAPI app
 app = FastAPI(
-    title="Dynamic SQL Agent with Auto Join Detection",
-    description="A text-to-SQL agent using Ollama models with dynamic database connections and automatic foreign key detection",
+    title="Dynamic SQL Agent with Enhanced Foreign Key Resolution",
+    description="A text-to-SQL agent using Ollama models with dynamic database connections and comprehensive foreign key resolution",
     version="1.2.0"
 )
 
@@ -64,23 +64,34 @@ async def ask_question(request: QueryRequest):
         
         # If no normalized data was provided by the agent but we have data,
         # try to manually normalize it
-        if "data" in response and response["data"] and not response.get("normalized_data"):
-            # Try to extract the main table from the query
-            main_table = None
-            if "sql_query" in response:
-                # Use a simple regex to extract the table name after FROM
-                import re
-                from_match = re.search(r'FROM\s+(\w+)', response["sql_query"], re.IGNORECASE)
-                if from_match:
-                    main_table = from_match.group(1)
-            
-            if main_table:
-                # Get normalized data for this table
-                normalized_result = db_manager.get_normalized_data(
-                    agent.engine, main_table, limit=100
-                )
-                if normalized_result and "normalized_data" in normalized_result:
-                    response["normalized_data"] = normalized_result["normalized_data"]
+        if "data" in response and response["data"] and "normalized_data" not in response:
+            try:
+                # Try to extract the main table from the query
+                main_table = None
+                if "sql_query" in response:
+                    # Use a simple regex to extract the table name after FROM
+                    import re
+                    from_match = re.search(r'FROM\s+(\w+)', response["sql_query"], re.IGNORECASE)
+                    if from_match:
+                        main_table = from_match.group(1)
+                        
+                        # Get the schema validator for this engine
+                        engine_id = str(id(agent.engine))
+                        if engine_id in db_manager.schema_validators:
+                            schema_validator = db_manager.schema_validators[engine_id]
+                            response["normalized_data"] = schema_validator.resolve_foreign_keys(
+                                response["data"], main_table
+                            )
+                        else:
+                            # Try to get normalized data from the db_manager directly
+                            normalized_result = db_manager.get_normalized_data(
+                                agent.engine, main_table, limit=100
+                            )
+                            if normalized_result and "normalized_data" in normalized_result:
+                                response["normalized_data"] = normalized_result["normalized_data"]
+            except Exception:
+                # If normalization fails, just continue without it
+                pass
         
         return response
     except ConnectionError as e:
@@ -260,10 +271,36 @@ async def suggest_join_query(db_config: DatabaseConfig, table_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/normalized-data")
-async def get_normalized_table_data(db_config: DatabaseConfig, table_name: str, limit: int = 100):
+@app.get("/api/normalized-data")
+async def get_normalized_table_data(
+    table_name: str,
+    limit: int = Query(100, description="Maximum number of rows to return"),
+    db_config: DatabaseConfig = Depends()
+):
     """
     Get fully normalized data for a table with all foreign key references resolved
+    """
+    try:
+        # Get connection to the database
+        engine = db_manager.get_connection(db_config.dict())
+        
+        # Get normalized data
+        result = db_manager.get_normalized_data(engine, table_name, limit)
+        
+        return result
+    except ConnectionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/normalized-data")
+async def post_normalized_table_data(
+    db_config: DatabaseConfig,
+    table_name: str,
+    limit: int = 100
+):
+    """
+    Alternative POST endpoint for getting fully normalized data
     """
     try:
         # Get connection to the database

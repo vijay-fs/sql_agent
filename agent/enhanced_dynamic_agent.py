@@ -329,7 +329,7 @@ Now, provide ONLY the SQL query for the user's question above."""
                 # Extract the text result for backward compatibility
                 result = result_obj["result"]
                 
-                # Extract normalized data if available
+                # Extract data and normalized data if available
                 data = result_obj.get("data", [])
                 normalized_data = result_obj.get("normalized_data", [])
                 
@@ -337,21 +337,31 @@ Now, provide ONLY the SQL query for the user's question above."""
                 # extract the main table and get normalized data directly
                 if normalize_results and not normalized_data and data:
                     main_table = self._extract_main_table(enhanced_query)
-                    if main_table:
-                        normalized_result = self.db_manager.get_normalized_data(
-                            self.engine, main_table, limit=100
-                        )
-                        if normalized_result and "normalized_data" in normalized_result:
-                            normalized_data = normalized_result["normalized_data"]
+                    if main_table and main_table in self.schema:
+                        # Get the schema validator for this engine
+                        engine_id = str(id(self.engine))
+                        if engine_id in self.db_manager.schema_validators:
+                            schema_validator = self.db_manager.schema_validators[engine_id]
+                            normalized_data = schema_validator.resolve_foreign_keys(data, main_table)
+                        else:
+                            # Try to get normalized data from the db_manager directly
+                            normalized_result = self.db_manager.get_normalized_data(
+                                self.engine, main_table, limit=100
+                            )
+                            if normalized_result and "normalized_data" in normalized_result:
+                                normalized_data = normalized_result["normalized_data"]
                 
                 # 7. Format and return the response with all available data
                 response_data = {
                     "user_query": query,
                     "sql_query": enhanced_query,
                     "result": result,
-                    "data": data,
-                    "normalized_data": normalized_data
+                    "data": data
                 }
+                
+                # Add normalized data if available
+                if normalized_data:
+                    response_data["normalized_data"] = normalized_data
                 
                 # Add debug info if query was enhanced
                 if enhanced_query != sql_query:
