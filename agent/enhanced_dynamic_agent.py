@@ -38,11 +38,18 @@ class EnhancedDynamicAgent:
             table_columns[table_name] = columns
         return table_columns
     
-    def sql_engine(self, query):
+    def sql_engine(self, query, return_full_result=False):
         """
         Execute a SQL query and return the results
+        
+        Args:
+            query: SQL query string
+            return_full_result: Whether to return the full result dictionary with enhanced data
+            
+        Returns:
+            String result or full result dictionary based on return_full_result
         """
-        return self.db_manager.execute_query(self.engine, query)
+        return self.db_manager.execute_query(self.engine, query, return_full_result)
     
     def generate_prompt(self, user_query):
         """
@@ -249,15 +256,40 @@ Now, provide ONLY the SQL query for the user's question above."""
                     return True
         return False
     
-    def run(self, query):
+    def build_normalized_query(self, table_name, include_related=True):
+        """
+        Build a query that returns normalized data for a table by automatically 
+        including related tables through foreign key relationships
+        
+        Args:
+            table_name: The main table to query
+            include_related: Whether to include related tables
+            
+        Returns:
+            SQL query string with appropriate JOINs
+        """
+        if not include_related or table_name not in self.schema:
+            return f"SELECT * FROM {table_name};"
+            
+        # Use the db_manager's suggest_join_query to create a comprehensive JOIN query
+        join_query = self.db_manager.suggest_join_query(self.engine, table_name)
+        
+        # If the suggested query generation fails, fall back to a simple query
+        if not join_query or join_query.startswith("Table") or join_query.startswith("No foreign key"):
+            return f"SELECT * FROM {table_name};"
+            
+        return join_query
+    
+    def run(self, query, normalize_results=True):
         """
         Run the agent with a natural language query
         
         Args:
             query: Natural language query from the user
-            
+            normalize_results: Whether to normalize results by including related table data
+                
         Returns:
-            Dictionary with the original query, generated SQL, and results
+            Dictionary with the original query, generated SQL, and results including normalized data
         """
         try:
             # 1. Generate prompt for Ollama
@@ -289,49 +321,103 @@ Now, provide ONLY the SQL query for the user's question above."""
             # 5. Enhance the query with JOINs if needed and applicable
             enhanced_query = self.enhance_query_with_joins(sql_query)
             
-            # 6. If the query still fails, try with a simplified version
+            # 6. Execute the query with full result data
             try:
-                result = self.sql_engine(enhanced_query)
+                # Get the full result object with enhanced data
+                result_obj = self.sql_engine(enhanced_query, return_full_result=True)
+                
+                # Extract the text result for backward compatibility
+                result = result_obj["result"]
+                
+                # Extract data and normalized data if available
+                data = result_obj.get("data", [])
+                normalized_data = result_obj.get("normalized_data", [])
+                
+                # If normalization is requested but no normalized data available yet,
+                # extract the main table and get normalized data directly
+                if normalize_results and not normalized_data and data:
+                    main_table = self._extract_main_table(enhanced_query)
+                    if main_table and main_table in self.schema:
+                        # Get the schema validator for this engine
+                        engine_id = str(id(self.engine))
+                        if engine_id in self.db_manager.schema_validators:
+                            schema_validator = self.db_manager.schema_validators[engine_id]
+                            normalized_data = schema_validator.resolve_foreign_keys(data, main_table)
+                        else:
+                            # Try to get normalized data from the db_manager directly
+                            normalized_result = self.db_manager.get_normalized_data(
+                                self.engine, main_table, limit=100
+                            )
+                            if normalized_result and "normalized_data" in normalized_result:
+                                normalized_data = normalized_result["normalized_data"]
+                
+                # 7. Format and return the response with all available data
+                response_data = {
+                    "user_query": query,
+                    "sql_query": enhanced_query,
+                    # "result": result,
+                    "data": data
+                }
+                
+                # Add normalized data if available
+                if normalized_data:
+                    response_data["normalized_data"] = normalized_data
+                
+                # Add debug info if query was enhanced
+                if enhanced_query != sql_query:
+                    response_data["original_query"] = sql_query
+                    response_data["note"] = "The original query was enhanced with JOINs based on foreign key relationships."
+                
+                return response_data
+                
             except Exception as e:
                 # Extract the main table from the query, if possible
                 main_table = self._extract_main_table(enhanced_query)
                 
                 if main_table and main_table in self.schema:
-                    # Get columns for this table
-                    columns = [c['name'] for c in self.schema[main_table]['columns']]
-                    simple_query = f"SELECT {main_table}.* FROM {main_table};"
-                    
-                    # Log the fallback
-                    fallback_note = f"The original query failed: {str(e)}. Using a simplified query."
-                    
-                    result = self.sql_engine(simple_query)
-                    
-                    # Format and return the response with fallback info
-                    return {
-                        "user_query": query,
-                        "sql_query": simple_query,
-                        "original_query": enhanced_query,
-                        "result": result,
-                        "note": fallback_note
-                    }
+                    # Get normalized data for this table
+                    if normalize_results:
+                        normalized_result = self.db_manager.get_normalized_data(
+                            self.engine, main_table, limit=100
+                        )
+                        
+                        # Log the fallback
+                        fallback_note = f"The original query failed: {str(e)}. Using a normalized query instead."
+                        
+                        # Return the normalized data
+                        return {
+                            "user_query": query,
+                            "sql_query": normalized_result.get("sql_query", ""),
+                            "original_query": enhanced_query,
+                            "result": normalized_result.get("result", ""),
+                            "data": normalized_result.get("data", []),
+                            "normalized_data": normalized_result.get("normalized_data", []),
+                            "note": fallback_note
+                        }
+                    else:
+                        # Just use a simple query
+                        simple_query = f"SELECT * FROM {main_table};"
+                        
+                        # Log the fallback
+                        fallback_note = f"The original query failed: {str(e)}. Using a simplified query."
+                        
+                        # Execute the query
+                        result_obj = self.sql_engine(simple_query, return_full_result=True)
+                        
+                        # Return the result
+                        return {
+                            "user_query": query,
+                            "sql_query": simple_query,
+                            "original_query": enhanced_query,
+                            "result": result_obj.get("result", ""),
+                            "data": result_obj.get("data", []),
+                            "normalized_data": result_obj.get("normalized_data", []),
+                            "note": fallback_note
+                        }
                 else:
                     # If we can't extract a main table, raise the original error
                     raise
-            
-            # 7. Format and return the response
-            response_data = {
-                "user_query": query,
-                "sql_query": enhanced_query,
-                "result": result
-            }
-            
-            # Add debug info if query was enhanced
-            if enhanced_query != sql_query:
-                response_data["original_query"] = sql_query
-                response_data["note"] = "The original query was enhanced with JOINs based on foreign key relationships."
-            
-            return response_data
-            
+                
         except Exception as e:
             return {
                 "user_query": query,
