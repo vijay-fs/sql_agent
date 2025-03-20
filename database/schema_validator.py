@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Tuple, Optional
 class SchemaValidator:
     """
     A utility class to validate and adapt SQL queries to match the actual database schema
+    with enhanced foreign key resolution
     """
     def __init__(self, engine):
         """
@@ -16,6 +17,7 @@ class SchemaValidator:
         self.engine = engine
         self.inspector = inspect(engine)
         self.tables_info = self._get_tables_info()
+        self.foreign_key_map = self._build_foreign_key_map()
         
     def _get_tables_info(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -41,6 +43,27 @@ class SchemaValidator:
             }
             
         return tables_info
+    
+    def _build_foreign_key_map(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """
+        Build a map of foreign key relationships for efficient lookup
+        
+        Returns:
+            Dictionary mapping table.column to referenced table.column
+        """
+        fk_map = {}
+        for table_name, table_info in self.tables_info.items():
+            fk_map[table_name] = {}
+            for fk in table_info['foreign_keys']:
+                if fk['constrained_columns'] and fk['referred_columns']:
+                    local_col = fk['constrained_columns'][0]
+                    referred_table = fk['referred_table']
+                    referred_col = fk['referred_columns'][0]
+                    fk_map[table_name][local_col] = {
+                        'referred_table': referred_table,
+                        'referred_column': referred_col
+                    }
+        return fk_map
     
     def get_actual_table_name(self, table_name: str) -> Optional[str]:
         """
@@ -408,10 +431,139 @@ class SchemaValidator:
                             warnings.append(f"Warning: Column '{column_name}' not found in table '{actual_table}'")
         
         return query, warnings
+    
+    def resolve_foreign_keys(self, data_rows: List[Dict], main_table: str) -> List[Dict]:
+        """
+        Resolve foreign key references in data rows
         
+        Args:
+            data_rows: List of data dictionaries
+            main_table: The main table these rows are from
+            
+        Returns:
+            List of enriched data dictionaries with resolved foreign key references
+        """
+        if not data_rows or main_table not in self.foreign_key_map:
+            return data_rows
+            
+        enriched_rows = []
+        
+        # Get foreign key relationships for this table
+        fk_relationships = self.foreign_key_map.get(main_table, {})
+        
+        # For each data row, resolve the foreign keys
+        for row in data_rows:
+            enriched_row = row.copy()
+            
+            # Process each foreign key
+            for fk_column, fk_info in fk_relationships.items():
+                if fk_column in row and row[fk_column] is not None:
+                    # Get the foreign key value
+                    fk_value = row[fk_column]
+                    
+                    # Get the referenced table and column
+                    referred_table = fk_info['referred_table']
+                    referred_column = fk_info['referred_column']
+                    
+                    # Fetch the referenced row
+                    referenced_row = self.fetch_referenced_row(referred_table, referred_column, fk_value)
+                    
+                    if referenced_row:
+                        # Get descriptive field for display
+                        display_field = self.get_display_field(referred_table, referenced_row)
+                        display_value = referenced_row.get(display_field, str(fk_value))
+                        
+                        # Add resolved reference to the enriched row
+                        enriched_row[f"{fk_column}_display"] = display_value
+                        
+                        # Create a new field with the related table name
+                        relation_key = referred_table if "_id" in fk_column else fk_column.replace("_id", "")
+                        enriched_row[relation_key] = {
+                            "id": fk_value,
+                            "table": referred_table,
+                            "display": display_value,
+                            **{k: v for k, v in referenced_row.items() if k != referred_column}
+                        }
+                        
+                        # Format the original FK field for display
+                        enriched_row[fk_column] = f"{fk_value} ({display_value})"
+            
+            enriched_rows.append(enriched_row)
+        
+        return enriched_rows
+    
+    def fetch_referenced_row(self, table: str, column: str, value: Any) -> Optional[Dict]:
+        """
+        Fetch a row from a table by its primary key
+        
+        Args:
+            table: The table to fetch from
+            column: The column to match on (usually primary key)
+            value: The value to match
+            
+        Returns:
+            Dictionary with the row data or None if not found
+        """
+        try:
+            # Properly escape values based on data type
+            if isinstance(value, (int, float)):
+                value_str = str(value)
+            else:
+                value_str = f"'{value}'"
+            
+            query = f"SELECT * FROM {table} WHERE {column} = {value_str} LIMIT 1"
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query))
+                row = result.fetchone()
+                
+                if row:
+                    row_dict = {}
+                    for i, col in enumerate(result.keys()):
+                        row_dict[col] = row[i]
+                    return row_dict
+                
+                return None
+        except Exception:
+            # If there's any error fetching the reference, just return None
+            return None
+    
+    def get_display_field(self, table: str, row: Dict) -> str:
+        """
+        Determine the best field to use for displaying a record
+        
+        Args:
+            table: The table name
+            row: The data row
+            
+        Returns:
+            Name of the field to use for display
+        """
+        # Common display field names
+        display_candidates = [
+            'name', 'title', 'label', 'display_name',
+            f"{table}_name", f"{table}_title", 'description',
+            'full_name', 'username', 'email', 'code', 'number'
+        ]
+        
+        # Try each candidate in order
+        for field in display_candidates:
+            if field in row and row[field]:
+                return field
+        
+        # If no suitable display field found, try to get one that's not an ID or timestamp
+        for field, value in row.items():
+            if (field != 'id' and not field.endswith('_id') and
+                not field.endswith('_at') and not field.startswith('is_') and
+                value is not None and str(value).strip()):
+                return field
+        
+        # Default to id if nothing else works
+        return 'id'
+
     def execute_query_safely(self, query: str) -> Tuple[Dict[str, Any], List[str]]:
         """
-        Validate, adapt, and execute a SQL query safely
+        Validate, adapt, and execute a SQL query safely with foreign key resolution
         
         Args:
             query: The SQL query to execute
@@ -457,7 +609,19 @@ class SchemaValidator:
                         data_row[col] = row[i]
                     data.append(data_row)
                 
-                return {"result": output, "data": data}, warnings
+                # Attempt to extract main table from query
+                main_table = self._extract_main_table_from_query(adapted_query)
+                
+                # Resolve foreign keys if main table was detected
+                normalized_data = data
+                if main_table:
+                    normalized_data = self.resolve_foreign_keys(data, main_table)
+                
+                return {
+                    "result": output, 
+                    "data": data,
+                    "normalized_data": normalized_data
+                }, warnings
                 
         except Exception as e:
             error_msg = f"Error executing query: {str(e)}"
@@ -469,20 +633,12 @@ class SchemaValidator:
             if fallback_result:
                 warnings.append("Automatically executed a fallback query to retrieve similar data")
                 
-                # Process the enhanced data to ensure foreign key relationships are properly displayed
-                if 'enhanced_data' in fallback_result:
-                    # Make a copy of the original data for reference
-                    fallback_result['original_data'] = fallback_result.get('data', [])
-                    
-                    # Use our specialized formatter to handle foreign key relationships
-                    processed_data = self.format_related_data(fallback_result['enhanced_data'])
-                    
-                    # Replace the data with the processed enhanced data
-                    fallback_result['data'] = processed_data
-                    
-                    # Keep the enhanced_data for reference but renamed to make it clearer
-                    fallback_result['detailed_data'] = fallback_result['enhanced_data']
-                    fallback_result.pop('enhanced_data', None)
+                # Add normalized data with resolved foreign keys
+                main_table = self._extract_main_table_from_fallback(fallback_result)
+                if main_table and 'data' in fallback_result:
+                    fallback_result['normalized_data'] = self.resolve_foreign_keys(
+                        fallback_result['data'], main_table
+                    )
                 
                 return fallback_result, warnings
             
@@ -551,7 +707,7 @@ class SchemaValidator:
                         warnings.append(f"Suggestion: Table '{problematic_table}' might be '{actual_table}'")
             
             return {"result": error_msg, "data": []}, warnings
-            
+    
     def _execute_fallback_query(self, original_query: str, error_message: str) -> Optional[Dict[str, Any]]:
         """
         Generate and execute a fallback query when the original query fails
@@ -621,97 +777,8 @@ class SchemaValidator:
             else:
                 error_detail = ""
             
-            # Check if we should include foreign key joins
-            include_joins = self._detect_query_type(original_query) == "SELECT" and len(valid_tables) == 1
-            related_tables_info = self._get_related_tables(main_table) if include_joins else []
-            
-            # Build a query with all valid columns from this table and joined tables
-            valid_columns = []
-            join_clauses = []
-            
-            # Add columns from the main table
-            for col_name in self.tables_info[main_table]['columns'].keys():
-                valid_columns.append(f"{main_table}.{col_name}")
-            
-            # Add joins and columns from related tables, focusing on descriptive fields
-            related_columns_map = {}  # To keep track of what relates to what
-            for relation in related_tables_info:
-                related_table = relation['referred_table']
-                relationship_type = relation.get('relationship_type', 'outgoing')  # Default to outgoing
-                
-                # Handle different types of relationships
-                if relationship_type == 'outgoing':
-                    # This table has a foreign key to another table
-                    local_column = relation['constrained_columns'][0]  # Assuming single-column FK for simplicity
-                    foreign_column = relation['referred_columns'][0]
-                    alias = f"fk_out_{related_table}"
-                    join_clause = f"LEFT JOIN {related_table} AS {alias} ON {main_table}.{local_column} = {alias}.{foreign_column}"
-                else:
-                    # Another table has a foreign key to this table
-                    local_column = relation['constrained_columns'][0]  # Column in this table being referenced
-                    foreign_column = relation['referred_columns'][0]  # FK column in the other table
-                    alias = f"fk_in_{related_table}"
-                    join_clause = f"LEFT JOIN {related_table} AS {alias} ON {main_table}.{local_column} = {alias}.{foreign_column}"
-                
-                # Add join clause
-                join_clauses.append(join_clause)
-                
-                # Add columns from the joined table, focusing on descriptive ones
-                if related_table in self.tables_info:
-                    # Get descriptive columns for this related table
-                    descriptive_columns = relation.get('descriptive_columns', []) or self._identify_descriptive_columns(related_table)
-                    
-                    # Store the relationship for result formatting
-                    relation_key = f"{relationship_type}_{local_column}"
-                    related_columns_map[relation_key] = {
-                        'table': related_table,
-                        'alias': alias,
-                        'local_column': local_column,
-                        'foreign_column': foreign_column,
-                        'relationship_type': relationship_type,
-                        'descriptive_columns': descriptive_columns
-                    }
-                    
-                    # Always include the primary key column from related table
-                    pk_columns = self.tables_info[related_table]['pk_columns']
-                    if pk_columns:
-                        pk_col = pk_columns[0]
-                        valid_columns.append(f"{alias}.{pk_col} AS {alias}_{pk_col}")
-                    
-                    # Add descriptive columns
-                    for col_name in descriptive_columns:
-                        if col_name in self.tables_info[related_table]['columns']:
-                            valid_columns.append(f"{alias}.{col_name} AS {alias}_{col_name}")
-                            
-                    # If no descriptive columns found, add at least a few important columns
-                    if not descriptive_columns:
-                        # Try to add some commonly useful columns if they exist
-                        candidate_columns = ['name', 'title', 'description', 'label', 'code', 'key', 'value', 'display_name']
-                        added = False
-                        for col_name in candidate_columns:
-                            if col_name in self.tables_info[related_table]['columns']:
-                                valid_columns.append(f"{alias}.{col_name} AS {alias}_{col_name}")
-                                added = True
-                        
-                        # If still no useful columns found, add the first few columns
-                        if not added:
-                            for i, col_name in enumerate(self.tables_info[related_table]['columns'].keys()):
-                                if i < 3:  # Just add first 3 columns
-                                    valid_columns.append(f"{alias}.{col_name} AS {alias}_{col_name}")
-            
-            # If no valid columns, use * as fallback
-            if not valid_columns:
-                columns_clause = f"{main_table}.*"
-            else:
-                columns_clause = ", ".join(valid_columns)
-            
-            # Build the complete query - intentionally excluding any WHERE clauses from original query
-            # because we want to show some data even if the original query had restrictive conditions
-            from_clause = f"FROM {main_table}"
-            if join_clauses:
-                from_clause += " " + " ".join(join_clauses)
-                
-            fallback_query = f"SELECT {columns_clause} {from_clause} LIMIT 5;"  # Limit to just 5 rows
+            # Build a query with all columns from this table
+            fallback_query = f"SELECT * FROM {main_table} LIMIT 5;"
             
             # Execute the fallback query
             with self.engine.connect() as conn:
@@ -730,244 +797,68 @@ class SchemaValidator:
                 separator = "-" * len(header)
                 output = f"Fallback query executed instead of the original query.\n\nFallback query: {fallback_query}{error_detail}\n\n{header}\n{separator}"
                 
-                # Convert rows to list of dicts for the data field, reorganizing to highlight relationships
+                # Convert rows to list of dicts for the data field
                 data = []
-                enhanced_data = []  # To store the enhanced data with relationships
-                
-                # Process each row
                 for row in rows:
                     # Basic row values for output
                     row_values = [str(value) for value in row]
                     output += f"\n{' | '.join(row_values)}"
                     
-                    # Build enhanced data structure with relationships
+                    # Build data row
                     data_row = {}
-                    enhanced_row = {}
-                    relations = {}
-                    
-                    # First add main table columns
                     for i, col in enumerate(column_names):
-                        value = row[i]
-                        data_row[col] = value
-                        
-                        # Check if this is a foreign key column needing lookup
-                        col_parts = col.split('.') if '.' in col else [col]
-                        col_base_name = col_parts[-1]  # Get the last part after any dots
-                        
-                        # Store main table values directly - not from a related table
-                        if not col.startswith('fk_'):
-                            enhanced_row[col_base_name] = value
-                        else:
-                            # Group related table values by their relationship type and table
-                            # Format is now fk_[in/out]_[table]_[column]
-                            parts = col.split('_', 3) if '_' in col else [col]
-                            
-                            if len(parts) >= 4:
-                                rel_direction = parts[1]  # 'in' or 'out'
-                                related_table = parts[2]
-                                related_col = parts[3]
-                                
-                                relation_key = f"{rel_direction}_{related_table}"
-                                if relation_key not in relations:
-                                    relations[relation_key] = {}
-                                    
-                                relations[relation_key][related_col] = value
-                    
-                    # Add relations with descriptive labels
-                    for relation_key, relation_info in related_columns_map.items():
-                        rel_type = relation_info.get('relationship_type', 'outgoing')
-                        table = relation_info['table']
-                        alias = relation_info['alias']
-                        local_col = relation_info['local_column']
-                        foreign_col = relation_info['foreign_column']
-                        
-                        # Parse the alias to get the direction and table
-                        alias_parts = alias.split('_', 2) if '_' in alias else [alias]
-                        if len(alias_parts) >= 3:
-                            rel_direction = alias_parts[1]  # 'in' or 'out'
-                            related_table_from_alias = alias_parts[2]
-                            
-                            # The key to lookup in our relations dict
-                            rel_lookup_key = f"{rel_direction}_{related_table_from_alias}"
-                            
-                            # Only include if we have data for this relation
-                            if rel_lookup_key in relations:
-                                rel_data = relations[rel_lookup_key]
-                                
-                                # Build a descriptive label using available data
-                                descriptive_parts = []
-                                for desc_col in relation_info['descriptive_columns']:
-                                    if desc_col in rel_data and rel_data[desc_col]:
-                                        descriptive_parts.append(str(rel_data[desc_col]))
-                                
-                                # Create a more structured representation of the relation
-                                if rel_type == 'outgoing':
-                                    # This is a foreign key from our table to another
-                                    fk_value = enhanced_row.get(local_col)
-                                    
-                                    if descriptive_parts:
-                                        # Create a normalized structure for the related entity
-                                        related_entity = {
-                                            'id': fk_value,
-                                            'table': table,
-                                            'display': ' - '.join(descriptive_parts),
-                                            'data': rel_data
-                                        }
-                                        
-                                        # Add to enhanced row in multiple formats
-                                        enhanced_row[f"{local_col}_raw"] = fk_value
-                                        enhanced_row[f"{local_col}_related"] = ' - '.join(descriptive_parts)
-                                        
-                                        # Add the full related entity information
-                                        enhanced_row[f"{table}"] = related_entity
-                                        
-                                        # For category_id, client_id, etc. - retain the original ID but also provide the descriptive name
-                                        # in the enhanced data format for better displays
-                                        if local_col in enhanced_row:
-                                            # Keep the original numeric ID value so joins will still work
-                                            # The enhanced display will be processed in execute_query_safely
-                                            pass
-                                else:
-                                    # This is a reference from another table to ours (incoming relationship)
-                                    # Add as a related collection since there could be multiple
-                                    related_collection_key = f"{table}_collection"
-                                    if related_collection_key not in enhanced_row:
-                                        enhanced_row[related_collection_key] = []
-                                        
-                                    # Only add if we have meaningful data
-                                    if descriptive_parts:
-                                        related_item = {
-                                            'table': table,
-                                            'foreign_key': foreign_col,
-                                            'local_key': local_col,
-                                            'display': ' - '.join(descriptive_parts),
-                                            'data': rel_data
-                                        }
-                                        enhanced_row[related_collection_key].append(related_item)
-                    
-                    data.append(data_row)  # Original format
-                    enhanced_data.append(enhanced_row)  # Enhanced format with relationships
+                        data_row[col] = row[i]
+                    data.append(data_row)
                 
-                # Add more user-friendly explanation
-                output += "\n\nForeign Key Relationships:\n"
-                for relation_key, relation_info in related_columns_map.items():
-                    rel_type = relation_info.get('relationship_type', 'outgoing')
-                    local_col = relation_info['local_column']
-                    foreign_col = relation_info['foreign_column']
-                    related_table = relation_info['table']
-                    
-                    desc_cols = ', '.join(relation_info['descriptive_columns']) if relation_info['descriptive_columns'] else 'No descriptive columns found'
-                    
-                    if rel_type == 'outgoing':
-                        # This table references another
-                        output += f"- {main_table}.{local_col} → {related_table}.{foreign_col} (Using descriptive fields: {desc_cols})\n"
-                    else:
-                        # Another table references this one
-                        output += f"- {related_table}.{foreign_col} → {main_table}.{local_col} (Using descriptive fields: {desc_cols})\n"
+                # Resolve foreign key references for the data
+                normalized_data = self.resolve_foreign_keys(data, main_table)
                 
                 return {
                     "result": output, 
-                    "data": data,  # Original data format
-                    "enhanced_data": enhanced_data,  # New data format with resolved references
-                    "fallback_query": fallback_query,
-                    "relationships": [{k: v} for k, v in related_columns_map.items()]  # Include relationship metadata
+                    "data": data,
+                    "normalized_data": normalized_data,
+                    "fallback_query": fallback_query
                 }
                 
         except Exception as e:
             # If the fallback query also fails, just return None
             return None
     
-    def _get_related_tables(self, table_name: str, related_depth: int = 1) -> List[Dict[str, Any]]:
+    def _extract_main_table_from_query(self, query: str) -> Optional[str]:
         """
-        Get tables related to the specified table via foreign keys
+        Extract the main table name from a query
         
         Args:
-            table_name: Name of the table to find relations for
-            related_depth: How many levels of related tables to include (defaults to 1)
+            query: SQL query string
             
         Returns:
-            List of related table information with relationship type
+            Main table name or None if not found
         """
-        if table_name not in self.tables_info:
-            return []
-            
-        # Get direct foreign keys (outgoing relationships)
-        direct_relations = self.tables_info[table_name]['foreign_keys']
-        for relation in direct_relations:
-            relation['relationship_type'] = 'outgoing'  # This table has a foreign key to another table
+        # For SELECT queries
+        if "FROM " in query.upper():
+            after_from = query.upper().split("FROM ")[1].strip()
+            # Extract table name (handles cases with WHERE, JOIN, etc.)
+            table_parts = re.split(r'\s+', after_from, 1)
+            table_name = table_parts[0].strip()
+            # Remove any trailing comma or semicolon
+            return table_name.rstrip(',;')
         
-        # Also look for incoming relationships (other tables referencing this one)
-        incoming_relations = []
-        for other_table, info in self.tables_info.items():
-            if other_table == table_name:
-                continue
-                
-            # Check if any foreign keys in this table point to our table
-            for fk in info['foreign_keys']:
-                if fk['referred_table'] == table_name:
-                    # Create a reverse relationship record
-                    incoming_relation = {
-                        'name': f"incoming_{other_table}_to_{table_name}",
-                        'constrained_columns': fk['referred_columns'],  # Columns in our table
-                        'referred_table': other_table,                   # The other table name
-                        'referred_columns': fk['constrained_columns'],   # Columns in the other table
-                        'relationship_type': 'incoming'                  # Other table has FK to this table
-                    }
-                    incoming_relations.append(incoming_relation)
-        
-        # Combine both directions of relationships
-        all_relations = direct_relations + incoming_relations
-        
-        # For each relation, detect the most likely descriptive field in the related table
-        for relation in all_relations:
-            related_table = relation['referred_table']
-            if related_table in self.tables_info:
-                relation['descriptive_columns'] = self._identify_descriptive_columns(related_table)
-        
-        return all_relations
-        
-    def _identify_descriptive_columns(self, table_name: str) -> List[str]:
+        return None
+    
+    def _extract_main_table_from_fallback(self, fallback_result: Dict) -> Optional[str]:
         """
-        Identify columns that are likely to be descriptive (not just IDs)
+        Extract the main table name from a fallback query result
         
         Args:
-            table_name: Name of the table
+            fallback_result: Fallback query result dictionary
             
         Returns:
-            List of column names that are likely descriptive
+            Main table name or None if not found
         """
-        if table_name not in self.tables_info:
-            return []
-            
-        descriptive_columns = []
-        name_pattern = re.compile(r'(name|title|label|description|summary|text|content)', re.IGNORECASE)
-        
-        # Check each column
-        for col_name in self.tables_info[table_name]['columns'].keys():
-            # Skip ID columns and other common non-descriptive columns
-            if col_name.lower() == 'id' or col_name.endswith('_id') or col_name.endswith('_at'):
-                continue
-                
-            # Include columns with descriptive names
-            if name_pattern.search(col_name):
-                descriptive_columns.append(col_name)
-                
-        # If no descriptive columns found, include everything except obvious IDs and timestamps
-        if not descriptive_columns:
-            for col_name in self.tables_info[table_name]['columns'].keys():
-                if not (col_name.lower() == 'id' or col_name.endswith('_id') or 
-                        col_name.endswith('_at') or col_name.startswith('is_')):
-                    descriptive_columns.append(col_name)
-                    
-        # If still no columns, include the first non-ID column
-        if not descriptive_columns:
-            for col_name in self.tables_info[table_name]['columns'].keys():
-                if col_name.lower() != 'id':
-                    descriptive_columns.append(col_name)
-                    break
-                    
-        return descriptive_columns
-            
+        if 'fallback_query' in fallback_result:
+            return self._extract_main_table_from_query(fallback_result['fallback_query'])
+        return None
+
     def _get_available_columns(self, table_name: str) -> List[str]:
         """
         Get all available columns for a table
@@ -982,58 +873,7 @@ class SchemaValidator:
             return []
             
         return list(self.tables_info[table_name]['columns'].keys())
-    
-    def format_related_data(self, data_rows):
-        """
-        Format data with foreign key relationships for better display
         
-        Args:
-            data_rows: List of data rows to format
-            
-        Returns:
-            List of formatted data rows with human-readable foreign key information
-        """
-        formatted_rows = []
-        
-        for row in data_rows:
-            formatted_row = {}
-            
-            # Process each field in the row
-            for key, value in row.items():
-                # Skip special internal fields
-                if key.endswith('_raw') or key.endswith('_collection'):
-                    continue
-                    
-                # Format foreign key fields with descriptive information
-                if key.endswith('_id') and f"{key}_related" in row:
-                    # Format as "ID (Description)" for better readability
-                    formatted_row[key] = f"{value} ({row[f'{key}_related']})"
-                # Handle fields that contain related table information
-                elif isinstance(value, dict) and 'table' in value and 'display' in value:
-                    # Format as "Table: Display" for better readability
-                    formatted_row[key] = f"{value['table']}: {value['display']}"
-                # Handle normal fields
-                elif not key.endswith('_related'):
-                    formatted_row[key] = value
-            
-            # Add any collection relationships in a structured format
-            collections = {}
-            for key, value in row.items():
-                if key.endswith('_collection') and isinstance(value, list) and value:
-                    related_table = key[:-11]  # Remove '_collection' suffix
-                    collections[related_table] = []
-                    
-                    for item in value:
-                        if 'display' in item:
-                            collections[related_table].append(item['display'])
-            
-            if collections:
-                formatted_row['related_collections'] = collections
-            
-            formatted_rows.append(formatted_row)
-            
-        return formatted_rows
-            
     def _extract_tables_from_query(self, query: str) -> List[str]:
         """
         Extract table names from a query string
@@ -1059,32 +899,3 @@ class SchemaValidator:
             tables.append(table_name)
         
         return tables
-        
-    def _detect_query_type(self, query: str) -> str:
-        """
-        Detect the type of SQL query (SELECT, INSERT, UPDATE, DELETE, etc.)
-        
-        Args:
-            query: The SQL query
-            
-        Returns:
-            String indicating the query type
-        """
-        query = query.strip().upper()
-        
-        if query.startswith('SELECT'):
-            return 'SELECT'
-        elif query.startswith('INSERT'):
-            return 'INSERT'
-        elif query.startswith('UPDATE'):
-            return 'UPDATE'
-        elif query.startswith('DELETE'):
-            return 'DELETE'
-        elif query.startswith('CREATE'):
-            return 'CREATE'
-        elif query.startswith('ALTER'):
-            return 'ALTER'
-        elif query.startswith('DROP'):
-            return 'DROP'
-        else:
-            return 'UNKNOWN'

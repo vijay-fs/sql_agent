@@ -305,10 +305,19 @@ class EnhancedDatabaseManager:
                     return True
         return False
     
-    def execute_query(self, engine, query):
+    def execute_query(self, engine, query, return_full_result=False):
         """
-        Execute a SQL query and return the results as a string.
+        Execute a SQL query and return the results.
         Uses SchemaValidator to validate and adapt the query to the actual database schema.
+        
+        Args:
+            engine: SQLAlchemy engine
+            query: SQL query string
+            return_full_result: If True, returns the full result dictionary with enhanced data
+                               If False, returns only the text output (default behavior)
+        
+        Returns:
+            String result or full result dictionary based on return_full_result
         """
         # Get or create schema validator for this engine
         engine_id = str(id(engine))
@@ -320,12 +329,86 @@ class EnhancedDatabaseManager:
         # Validate, adapt, and execute the query
         result_dict, warnings = schema_validator.execute_query_safely(query)
         
-        # Include warnings in the output if there are any
-        output = result_dict["result"]
+        # Include warnings in the output
         if warnings:
             warning_output = "\n\nWarnings/Suggestions:"
             for warning in warnings:
                 warning_output += f"\n- {warning}"
-            output += warning_output
+            result_dict["result"] += warning_output
         
-        return output
+        # Return the full result dictionary if requested
+        if return_full_result:
+            result_dict["warnings"] = warnings
+            return result_dict
+        else:
+            # Return just the text output for backward compatibility
+            return result_dict["result"]
+            
+    def get_normalized_data(self, engine, table_name, limit=100):
+        """
+        Get fully normalized data for a table with all foreign key references resolved
+        
+        Args:
+            engine: SQLAlchemy engine
+            table_name: Name of the table to query
+            limit: Maximum number of rows to return
+            
+        Returns:
+            Dictionary with the original query, normalized data, and text results
+        """
+        # Get or create schema validator for this engine
+        engine_id = str(id(engine))
+        if engine_id not in self.schema_validators:
+            self.schema_validators[engine_id] = SchemaValidator(engine)
+        
+        schema_validator = self.schema_validators[engine_id]
+        
+        # Create a join query if the table has foreign keys
+        join_query = self.suggest_join_query(engine, table_name)
+        
+        # If no join query could be generated, use a simple query
+        if join_query.startswith("Table") or join_query.startswith("No foreign key"):
+            query = f"SELECT * FROM {table_name} LIMIT {limit};"
+        else:
+            # Add LIMIT to the join query
+            if ";" in join_query:
+                join_query = join_query[:-1]  # Remove trailing semicolon
+            query = f"{join_query} LIMIT {limit};"
+        
+        # Execute the query
+        try:
+            result_dict, warnings = schema_validator.execute_query_safely(query)
+            
+            # Include warnings in the output
+            if warnings:
+                warning_output = "\n\nWarnings/Suggestions:"
+                for warning in warnings:
+                    warning_output += f"\n- {warning}"
+                result_dict["result"] += warning_output
+            
+            return {
+                "sql_query": query,
+                "result": result_dict["result"],
+                "data": result_dict.get("data", []),
+                "normalized_data": result_dict.get("normalized_data", [])
+            }
+            
+        except Exception as e:
+            # If the join query fails, try a simple query
+            simple_query = f"SELECT * FROM {table_name} LIMIT {limit};"
+            result_dict, warnings = schema_validator.execute_query_safely(simple_query)
+            
+            if warnings:
+                warning_output = "\n\nWarnings/Suggestions:"
+                for warning in warnings:
+                    warning_output += f"\n- {warning}"
+                result_dict["result"] += warning_output
+            
+            return {
+                "sql_query": simple_query,
+                "result": result_dict["result"],
+                "data": result_dict.get("data", []),
+                "normalized_data": result_dict.get("normalized_data", []),
+                "error": str(e),
+                "original_query": query
+            }
