@@ -355,7 +355,7 @@ Now, provide ONLY the SQL query for the user's question above."""
                 response_data = {
                     "user_query": query,
                     "sql_query": enhanced_query,
-                    "result": result,
+                    # "result": result,
                     "data": data
                 }
                 
